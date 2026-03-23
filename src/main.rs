@@ -11,11 +11,61 @@ struct IdeaNode {
     parent_id: Option<usize>,
 }
 
+#[derive(PartialEq, Clone, Copy)]
+enum NodeCategory {
+    Idea,
+    Task,
+    Bug,
+    Feature,
+    Research,
+    Done,
+}
+
+impl NodeCategory {
+    fn all() -> &'static [NodeCategory] {
+        &[Self::Idea, Self::Task, Self::Bug, Self::Feature, Self::Research, Self::Done]
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Idea => "💡 Idea",
+            Self::Task => "📋 Task",
+            Self::Bug => "🐛 Bug",
+            Self::Feature => "✨ Feature",
+            Self::Research => "🔬 Research",
+            Self::Done => "✅ Done",
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self {
+            Self::Idea => "💡",
+            Self::Task => "📋",
+            Self::Bug => "🐛",
+            Self::Feature => "✨",
+            Self::Research => "🔬",
+            Self::Done => "✅",
+        }
+    }
+
+    fn color(&self) -> egui::Color32 {
+        match self {
+            Self::Idea => egui::Color32::from_rgb(180, 160, 255),
+            Self::Task => egui::Color32::from_rgb(100, 180, 255),
+            Self::Bug => egui::Color32::from_rgb(255, 100, 100),
+            Self::Feature => egui::Color32::from_rgb(100, 255, 160),
+            Self::Research => egui::Color32::from_rgb(255, 200, 80),
+            Self::Done => egui::Color32::from_rgb(120, 120, 120),
+        }
+    }
+}
+
 struct BlueprintNode {
     id: usize,
     title: String,
     content: String,
     pos: egui::Pos2,
+    category: NodeCategory,
 }
 
 #[derive(PartialEq, Clone)]
@@ -614,6 +664,7 @@ impl eframe::App for GravityApp {
                             title: format!("Idea {}", id),
                             content: String::new(),
                             pos: spawn,
+                            category: NodeCategory::Idea,
                         });
                     }
                     if ui.button("🗑 Clear").clicked() {
@@ -736,13 +787,28 @@ impl eframe::App for GravityApp {
                     // In link mode, show a connect button inside each node
                     let node_id = node.id;
                     let is_link_mode = self.bp_link_mode;
-                    let response = egui::Window::new(format!("💡 {}", node.title))
+                    let cat_color = node.category.color();
+                    let cat_icon = node.category.icon();
+                    let frame = egui::Frame::window(&ctx.style())
+                        .stroke(egui::Stroke::new(2.0, cat_color));
+                    let response = egui::Window::new(format!("{} {}", cat_icon, node.title))
                         .current_pos(screen_pos)
                         .movable(!is_link_mode)
                         .constrain(false)
+                        .frame(frame)
                         .id(win_id)
                         .show(ctx, |ui| {
                             ui.text_edit_singleline(&mut node.title);
+                            ui.horizontal(|ui| {
+                                ui.label("Category:");
+                                egui::ComboBox::from_id_salt(node_id)
+                                    .selected_text(node.category.label())
+                                    .show_ui(ui, |ui| {
+                                        for &cat in NodeCategory::all() {
+                                            ui.selectable_value(&mut node.category, cat, cat.label());
+                                        }
+                                    });
+                            });
                             ui.add(egui::TextEdit::multiline(&mut node.content).desired_rows(3).desired_width(300.0));
                             if is_link_mode {
                                 ui.separator();
