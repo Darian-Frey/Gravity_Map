@@ -16,7 +16,6 @@ struct BlueprintNode {
     title: String,
     content: String,
     pos: egui::Pos2,
-    parent_id: Option<usize>,
 }
 
 #[derive(PartialEq, Clone)]
@@ -38,6 +37,11 @@ struct GravityApp {
     bp_cam_offset: egui::Vec2,
     bp_zoom: f32,
     bp_next_id: usize,
+    bp_tethers: Vec<(usize, usize)>,
+    /// When linking: the source node id we're dragging from
+    bp_link_from: Option<usize>,
+    /// Whether "Link mode" is active (click nodes to connect them)
+    bp_link_mode: bool,
 }
 
 impl Default for GravityApp {
@@ -52,6 +56,9 @@ impl Default for GravityApp {
             bp_cam_offset: egui::Vec2::ZERO,
             bp_zoom: 1.0,
             bp_next_id: 0,
+            bp_tethers: Vec::new(),
+            bp_link_from: None,
+            bp_link_mode: false,
         }
     }
 }
@@ -601,65 +608,121 @@ impl eframe::App for GravityApp {
                             title: format!("Idea {}", id),
                             content: String::new(),
                             pos: spawn,
-                            parent_id: None,
                         });
                     }
                     if ui.button("🗑 Clear").clicked() {
                         self.bp_nodes.clear();
+                        self.bp_tethers.clear();
                         self.bp_next_id = 0;
+                        self.bp_link_from = None;
+                        self.bp_link_mode = false;
+                    }
+
+                    ui.add_space(8.0);
+                    let link_label = if self.bp_link_mode { "🔗 Linking... (click to cancel)" } else { "🔗 Link Nodes" };
+                    if ui.button(link_label).clicked() {
+                        self.bp_link_mode = !self.bp_link_mode;
+                        self.bp_link_from = None;
                     }
                 });
                 ui.separator();
 
-                // --- BLUEPRINT TETHER LINES (parent -> child) ---
+                // --- BLUEPRINT TETHER LINES (manual connections) ---
                 {
                     let painter = ui.painter();
                     let screen_center = egui::pos2(bp_panel_rect.center().x, bp_panel_rect.center().y);
                     let positions: Vec<(usize, egui::Pos2)> = self.bp_nodes.iter().map(|n| (n.id, n.pos)).collect();
-                    for node in &self.bp_nodes {
-                        if let Some(pid) = node.parent_id {
-                            if let Some((_, parent_pos)) = positions.iter().find(|(id, _)| *id == pid) {
-                                let ps = bp_to_screen(*parent_pos);
-                                let cs = bp_to_screen(node.pos);
-                                let mid = ps + (cs - ps) * 0.5;
-                                let cp = mid + (screen_center - mid) * 0.2;
-                                let glow = egui::Color32::from_rgba_unmultiplied(150, 100, 255, 25);
-                                let core = egui::Color32::from_rgba_unmultiplied(200, 170, 255, 180);
-                                painter.add(egui::epaint::QuadraticBezierShape {
-                                    points: [ps, cp, cs], closed: false,
-                                    fill: egui::Color32::TRANSPARENT,
-                                    stroke: egui::Stroke::new(4.0, glow).into(),
-                                });
-                                painter.add(egui::epaint::QuadraticBezierShape {
-                                    points: [ps, cp, cs], closed: false,
-                                    fill: egui::Color32::TRANSPARENT,
-                                    stroke: egui::Stroke::new(1.2, core).into(),
-                                });
+
+                    for &(from_id, to_id) in &self.bp_tethers {
+                        let from_pos = positions.iter().find(|(id, _)| *id == from_id).map(|(_, p)| *p);
+                        let to_pos = positions.iter().find(|(id, _)| *id == to_id).map(|(_, p)| *p);
+                        if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
+                            let ps = bp_to_screen(fp);
+                            let cs = bp_to_screen(tp);
+                            let mid = ps + (cs - ps) * 0.5;
+                            let cp = mid + (screen_center - mid) * 0.2;
+                            let glow = egui::Color32::from_rgba_unmultiplied(150, 100, 255, 25);
+                            let core = egui::Color32::from_rgba_unmultiplied(200, 170, 255, 180);
+                            painter.add(egui::epaint::QuadraticBezierShape {
+                                points: [ps, cp, cs], closed: false,
+                                fill: egui::Color32::TRANSPARENT,
+                                stroke: egui::Stroke::new(4.0, glow).into(),
+                            });
+                            painter.add(egui::epaint::QuadraticBezierShape {
+                                points: [ps, cp, cs], closed: false,
+                                fill: egui::Color32::TRANSPARENT,
+                                stroke: egui::Stroke::new(1.2, core).into(),
+                            });
+                        }
+                    }
+
+                    // Draw preview line while linking
+                    if self.bp_link_mode {
+                        if let Some(from_id) = self.bp_link_from {
+                            if let Some((_, from_pos)) = positions.iter().find(|(id, _)| *id == from_id) {
+                                let ps = bp_to_screen(*from_pos);
+                                if let Some(mouse) = ctx.input(|i| i.pointer.hover_pos()) {
+                                    painter.line_segment(
+                                        [ps, mouse],
+                                        egui::Stroke::new(2.0, egui::Color32::from_rgba_unmultiplied(200, 170, 255, 120)),
+                                    );
+                                }
                             }
                         }
                     }
                 }
 
                 // --- BLUEPRINT RENDER WINDOWS ---
+                let mut clicked_node_id: Option<usize> = None;
                 for node in &mut self.bp_nodes {
                     let screen_pos = bp_to_screen(node.pos);
                     let win_id = egui::Id::new(node.id + 9000);
+
+                    // In link mode, show a connect button inside each node
+                    let node_id = node.id;
+                    let is_link_mode = self.bp_link_mode;
                     let response = egui::Window::new(format!("💡 {}", node.title))
                         .current_pos(screen_pos)
-                        .movable(true)
+                        .movable(!is_link_mode)
                         .constrain(false)
                         .id(win_id)
                         .show(ctx, |ui| {
                             ui.text_edit_singleline(&mut node.title);
                             ui.add(egui::TextEdit::multiline(&mut node.content).desired_rows(3).desired_width(300.0));
+                            if is_link_mode {
+                                ui.separator();
+                                if ui.button("⬤ Connect").clicked() {
+                                    clicked_node_id = Some(node_id);
+                                }
+                            }
                         });
 
-                    if let Some(inner) = response {
-                        let actual_pos = inner.response.rect.min;
-                        let delta = actual_pos - screen_pos;
-                        if delta.length() > 0.5 {
-                            node.pos += delta / bp_zoom;
+                    if !is_link_mode {
+                        if let Some(inner) = response {
+                            let actual_pos = inner.response.rect.min;
+                            let delta = actual_pos - screen_pos;
+                            if delta.length() > 0.5 {
+                                node.pos += delta / bp_zoom;
+                            }
                         }
+                    }
+                }
+
+                // Handle link mode clicks
+                if let Some(target_id) = clicked_node_id {
+                    if let Some(from_id) = self.bp_link_from {
+                        if from_id != target_id {
+                            // Don't add duplicate tethers
+                            let exists = self.bp_tethers.iter().any(|&(a, b)|
+                                (a == from_id && b == target_id) || (a == target_id && b == from_id)
+                            );
+                            if !exists {
+                                self.bp_tethers.push((from_id, target_id));
+                            }
+                        }
+                        self.bp_link_from = None;
+                    } else {
+                        self.bp_link_from = Some(target_id);
                     }
                 }
             }
