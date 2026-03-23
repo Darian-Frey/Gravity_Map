@@ -14,6 +14,7 @@ struct IdeaNode {
 struct GravityApp {
     mode: String,
     nodes: Vec<IdeaNode>,
+    orbit_enabled: bool,
 }
 
 impl Default for GravityApp {
@@ -21,6 +22,7 @@ impl Default for GravityApp {
         Self {
             mode: "Blueprint".to_owned(),
             nodes: Vec::new(),
+            orbit_enabled: false,
         }
     }
 }
@@ -78,8 +80,10 @@ impl eframe::App for GravityApp {
                     force -= diff_sun.normalized() * orbit_error * attraction_strength;
 
                     // 2. ORBITAL MOTION (The Spinning)
-                    let tangent = egui::vec2(-diff_sun.y, diff_sun.x).normalized();
-                    force += tangent * orbit_speed;
+                    if self.orbit_enabled {
+                        let tangent = egui::vec2(-diff_sun.y, diff_sun.x).normalized();
+                        force += tangent * orbit_speed;
+                    }
 
                     // 3. Repulsion from other planets
                     for j in 0..self.nodes.len() {
@@ -141,6 +145,18 @@ impl eframe::App for GravityApp {
                     }
                     if ui.button("🗑 Clear").clicked() {
                         self.nodes.clear();
+                    }
+
+                    ui.add_space(8.0);
+                    if ui
+                        .button(if self.orbit_enabled {
+                            "⏸ Pause Orbit"
+                        } else {
+                            "▶ Resume Orbit"
+                        })
+                        .clicked()
+                    {
+                        self.orbit_enabled = !self.orbit_enabled;
                     }
                 });
 
@@ -228,6 +244,18 @@ impl eframe::App for GravityApp {
                     }
                     if ui.button("🗑 Clear").clicked() {
                         self.nodes.clear();
+                    }
+
+                    ui.add_space(8.0);
+                    if ui
+                        .button(if self.orbit_enabled {
+                            "⏸ Pause Orbit"
+                        } else {
+                            "▶ Resume Orbit"
+                        })
+                        .clicked()
+                    {
+                        self.orbit_enabled = !self.orbit_enabled;
                     }
                 });
 
