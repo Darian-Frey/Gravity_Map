@@ -5,6 +5,8 @@ struct IdeaNode {
     id: usize,
     title: String,
     content: String,
+    /// Relative path from project root with " > " separators
+    file_path: String,
     /// Position used in Gravity mode (Mode 2)
     pos: egui::Pos2,
     vel: egui::Vec2,
@@ -12,7 +14,11 @@ struct IdeaNode {
     blueprint_pos: egui::Pos2,
     blueprint_vel: egui::Vec2,
     is_python: bool,
-    depth: usize, // 0 = root, 1 = subfolder, etc.
+    /// Whether this node is a directory (sub-sun) rather than a file (planet)
+    is_dir: bool,
+    depth: usize,
+    /// ID of the parent node this orbits around (None = root sun)
+    parent_id: Option<usize>,
 }
 
 struct GravityApp {
@@ -36,6 +42,37 @@ impl Default for GravityApp {
             collapse_action: 0,
         }
     }
+}
+
+/// Returns the distance from `point` to the nearest point on the quadratic bezier.
+fn dist_to_bezier(point: egui::Pos2, p0: egui::Pos2, p1: egui::Pos2, p2: egui::Pos2) -> f32 {
+    let steps = 16;
+    let mut min_dist = f32::MAX;
+    for i in 0..steps {
+        let t0 = i as f32 / steps as f32;
+        let t1 = (i + 1) as f32 / steps as f32;
+        let a = bezier_point(p0, p1, p2, t0);
+        let b = bezier_point(p0, p1, p2, t1);
+        min_dist = min_dist.min(point_to_segment_dist(point, a, b));
+    }
+    min_dist
+}
+
+fn bezier_point(p0: egui::Pos2, p1: egui::Pos2, p2: egui::Pos2, t: f32) -> egui::Pos2 {
+    let inv = 1.0 - t;
+    egui::pos2(
+        inv * inv * p0.x + 2.0 * inv * t * p1.x + t * t * p2.x,
+        inv * inv * p0.y + 2.0 * inv * t * p1.y + t * t * p2.y,
+    )
+}
+
+fn point_to_segment_dist(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    let ab = b - a;
+    let ap = p - a;
+    let t = (ap.x * ab.x + ap.y * ab.y) / (ab.x * ab.x + ab.y * ab.y + 0.0001);
+    let t = t.clamp(0.0, 1.0);
+    let closest = egui::pos2(a.x + t * ab.x, a.y + t * ab.y);
+    (p - closest).length()
 }
 
 /// Returns a (glow, core) colour pair for tether lines based on folder depth.
@@ -70,47 +107,57 @@ fn depth_colors(depth: usize) -> (egui::Color32, egui::Color32) {
 
 impl eframe::App for GravityApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // --- MODE 2: GRAVITY PHYSICS (Orbital Depth + Motion) ---
+        // --- MODE 2: GRAVITY PHYSICS (Hierarchical orbits) ---
         if self.mode == "Gravity" && !self.nodes.is_empty() {
-            let sun_idx = self.nodes.iter().position(|n| n.title == "main.py");
+            let attraction_strength = 0.1;
+            let repulsion_strength = 200000.0;
+            let dt = 0.1;
+            let friction = 0.98;
 
-            if let Some(s_idx) = sun_idx {
-                let sun_pos = self.nodes[s_idx].pos;
-                let attraction_strength = 0.1;
-                let repulsion_strength = 200000.0;
-                let dt = 0.1;
-                let friction = 0.98; // High friction keeps it "silky" but moving
+            // Snapshot positions for stable force calculation
+            let positions: Vec<(usize, egui::Pos2, Option<usize>, bool)> = self.nodes
+                .iter()
+                .map(|n| (n.id, n.pos, n.parent_id, n.is_dir))
+                .collect();
 
-                for i in 0..self.nodes.len() {
-                    if i == s_idx {
-                        continue;
-                    }
-
-                    let mut force = egui::Vec2::ZERO;
-                    let diff_sun = self.nodes[i].pos - sun_pos;
-                    let dist_sun = diff_sun.length().max(1.0);
-
-                    // 1. Target Orbit Logic (The Rings)
-                    let target_orbit = 250.0 + (self.nodes[i].depth as f32 * 200.0);
-                    let orbit_error = dist_sun - target_orbit;
-                    force -= diff_sun.normalized() * orbit_error * attraction_strength;
-
-                    // 2. Repulsion from other planets
-                    for j in 0..self.nodes.len() {
-                        if i == j {
-                            continue;
-                        }
-                        let diff = self.nodes[i].pos - self.nodes[j].pos;
-                        let dist = diff.length().max(10.0);
-                        if dist < 800.0 {
-                            force += diff.normalized() * (repulsion_strength / (dist * dist));
-                        }
-                    }
-
-                    let new_vel = (self.nodes[i].vel + force * dt) * friction;
-                    self.nodes[i].vel = new_vel;
-                    self.nodes[i].pos += new_vel * dt;
+            for i in 0..self.nodes.len() {
+                // Root sun (no parent) stays put
+                if self.nodes[i].parent_id.is_none() {
+                    continue;
                 }
+
+                let mut force = egui::Vec2::ZERO;
+
+                // 1. Attract to parent node
+                if let Some(pid) = self.nodes[i].parent_id {
+                    if let Some((_, parent_pos, _, _parent_is_dir)) = positions.iter().find(|(id, _, _, _)| *id == pid) {
+                        let diff = self.nodes[i].pos - *parent_pos;
+                        let dist = diff.length().max(1.0);
+                        // Sub-suns orbit at tighter radius, files at wider
+                        let target_orbit = if self.nodes[i].is_dir { 200.0 } else { 150.0 };
+                        let orbit_error = dist - target_orbit;
+                        force -= diff.normalized() * orbit_error * attraction_strength;
+                    }
+                }
+
+                // 2. Repulsion from siblings (same parent)
+                let my_parent = self.nodes[i].parent_id;
+                for (j, (_, other_pos, other_parent, _)) in positions.iter().enumerate() {
+                    if i == j { continue; }
+                    // Stronger repulsion for siblings, weaker for unrelated
+                    let is_sibling = *other_parent == my_parent;
+                    let diff = self.nodes[i].pos - *other_pos;
+                    let dist = diff.length().max(10.0);
+                    let range = if is_sibling { 800.0 } else { 400.0 };
+                    let strength = if is_sibling { repulsion_strength } else { repulsion_strength * 0.3 };
+                    if dist < range {
+                        force += diff.normalized() * (strength / (dist * dist));
+                    }
+                }
+
+                let new_vel = (self.nodes[i].vel + force * dt) * friction;
+                self.nodes[i].vel = new_vel;
+                self.nodes[i].pos += new_vel * dt;
             }
         }
 
@@ -224,12 +271,15 @@ impl eframe::App for GravityApp {
                             id,
                             title: format!("Idea {}", id),
                             content: String::new(),
+                            file_path: String::new(),
                             pos: spawn_pos,
                             vel: egui::Vec2::ZERO,
                             blueprint_pos: spawn_pos,
                             blueprint_vel: egui::Vec2::ZERO,
                             is_python: false,
+                            is_dir: false,
                             depth: 0,
+                            parent_id: None,
                         });
                     }
                     if ui.button("🐍 Add Python").clicked() {
@@ -238,12 +288,15 @@ impl eframe::App for GravityApp {
                             id,
                             title: format!("module_{}.py", id),
                             content: String::new(),
+                            file_path: String::new(),
                             pos: egui::pos2(200.0, 200.0),
                             vel: egui::Vec2::ZERO,
                             blueprint_pos: egui::pos2(200.0, 200.0),
                             blueprint_vel: egui::Vec2::ZERO,
                             is_python: true,
+                            is_dir: false,
                             depth: 0,
+                            parent_id: None,
                         });
                     }
                     if ui.button("🗑 Clear").clicked() {
@@ -267,39 +320,92 @@ impl eframe::App for GravityApp {
                     }
                 });
 
-                // --- TETHER LINES (sun-to-planet, matching Mode 2 style) ---
+                // --- INTERACTIVE TETHER LINES (parent -> child) ---
                 {
                     let painter = ui.painter();
                     let screen_center = egui::pos2(panel_rect.center().x, panel_rect.center().y);
-                    let sun_screen = self.nodes.iter()
-                        .find(|n| n.title == "main.py")
-                        .map(|n| to_screen(n.blueprint_pos));
-                    if let Some(s_pos) = sun_screen {
-                        for node in &self.nodes {
-                            if node.title != "main.py" {
-                                let planet_screen = to_screen(node.blueprint_pos);
-                                let mid = s_pos + (planet_screen - s_pos) * 0.5;
+                    let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+                    // Snapshot blueprint positions by id for lookup
+                    let bp_positions: Vec<(usize, egui::Pos2)> = self.nodes.iter().map(|n| (n.id, n.blueprint_pos)).collect();
+                    for node in &self.nodes {
+                        if let Some(pid) = node.parent_id {
+                            if let Some((_, parent_pos)) = bp_positions.iter().find(|(id, _)| *id == pid) {
+                                let parent_screen = to_screen(*parent_pos);
+                                let child_screen = to_screen(node.blueprint_pos);
+                                let mid = parent_screen + (child_screen - parent_screen) * 0.5;
                                 let cp = mid + (screen_center - mid) * 0.2;
+
+                                let dist = mouse_pos
+                                    .map(|mp| dist_to_bezier(mp, parent_screen, cp, child_screen))
+                                    .unwrap_or(f32::MAX);
+                                let hover_range = 60.0;
+                                let is_near = dist < hover_range;
+
                                 let (glow_color, core_color) = depth_colors(node.depth);
+                                let (glow_w, core_w) = if dist < 8.0 {
+                                    (8.0, 2.5)
+                                } else {
+                                    (4.0, 1.2)
+                                };
+
                                 painter.add(egui::epaint::QuadraticBezierShape {
-                                    points: [s_pos, cp, planet_screen],
+                                    points: [parent_screen, cp, child_screen],
                                     closed: false,
                                     fill: egui::Color32::TRANSPARENT,
-                                    stroke: egui::Stroke::new(4.0, glow_color).into(),
+                                    stroke: egui::Stroke::new(glow_w, glow_color).into(),
                                 });
                                 painter.add(egui::epaint::QuadraticBezierShape {
-                                    points: [s_pos, cp, planet_screen],
+                                    points: [parent_screen, cp, child_screen],
                                     closed: false,
                                     fill: egui::Color32::TRANSPARENT,
-                                    stroke: egui::Stroke::new(1.2, core_color).into(),
+                                    stroke: egui::Stroke::new(core_w, core_color).into(),
                                 });
+
+                                if is_near {
+                                    let fade = ((1.0 - dist / hover_range) * 255.0) as u8;
+                                    let label_pos = bezier_point(parent_screen, cp, child_screen, 0.5);
+                                    let label = if node.file_path.is_empty() {
+                                        node.title.clone()
+                                    } else {
+                                        node.file_path.clone()
+                                    };
+                                    let text_galley = painter.layout_no_wrap(
+                                        label.clone(),
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::TRANSPARENT,
+                                    );
+                                    let pill_w = text_galley.size().x + 16.0;
+                                    let pill_h = text_galley.size().y + 10.0;
+                                    painter.rect_filled(
+                                        egui::Rect::from_center_size(label_pos, egui::vec2(pill_w, pill_h)),
+                                        pill_h / 2.0,
+                                        egui::Color32::from_rgba_unmultiplied(15, 15, 25, (fade as f32 * 0.85) as u8),
+                                    );
+                                    painter.rect_stroke(
+                                        egui::Rect::from_center_size(label_pos, egui::vec2(pill_w, pill_h)),
+                                        pill_h / 2.0,
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(120, 180, 255, fade / 2)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                    painter.text(
+                                        label_pos,
+                                        egui::Align2::CENTER_CENTER,
+                                        &label,
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::from_rgba_unmultiplied(200, 230, 255, fade),
+                                    );
+                                }
                             }
                         }
                     }
                 }
 
                 for node in &mut self.nodes {
-                    let title = if node.is_python {
+                    let title = if node.parent_id.is_none() {
+                        format!("🌞 {}", node.title)
+                    } else if node.is_dir {
+                        format!("⭐ {}", node.title)
+                    } else if node.is_python {
                         format!("🐍 {}", node.title)
                     } else {
                         format!("💡 {}", node.title)
@@ -398,9 +504,11 @@ impl eframe::App for GravityApp {
 
                             fn scan_recursive(
                                 dir: &std::path::Path,
+                                root: &std::path::Path,
                                 nodes: &mut Vec<IdeaNode>,
                                 id_gen: &mut usize,
                                 depth: usize,
+                                parent_id: Option<usize>,
                             ) {
                                 if let Ok(entries) = std::fs::read_dir(dir) {
                                     for entry in entries.flatten() {
@@ -408,59 +516,150 @@ impl eframe::App for GravityApp {
                                         let file_name =
                                             path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                                         if path.is_dir() {
-                                            if !["venv", ".git", "__pycache__"].contains(&file_name)
+                                            if !["venv", ".git", "__pycache__", "node_modules", ".venv"]
+                                                .contains(&file_name)
                                             {
-                                                scan_recursive(&path, nodes, id_gen, depth + 1);
+                                                // Check if this dir contains any .py files (directly or nested)
+                                                let has_py = std::fs::read_dir(&path)
+                                                    .map(|e| e.flatten().any(|e| {
+                                                        let p = e.path();
+                                                        (p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("py"))
+                                                            || p.is_dir()
+                                                    }))
+                                                    .unwrap_or(false);
+                                                if has_py {
+                                                    let dir_id = *id_gen;
+                                                    let rel = path.strip_prefix(root)
+                                                        .unwrap_or(&path)
+                                                        .to_string_lossy()
+                                                        .replace(std::path::MAIN_SEPARATOR, " > ");
+                                                    nodes.push(IdeaNode {
+                                                        id: dir_id,
+                                                        title: format!("{}/", file_name),
+                                                        content: format!("Directory: {}", rel),
+                                                        file_path: rel,
+                                                        pos: egui::pos2(640.0, 360.0),
+                                                        vel: egui::Vec2::ZERO,
+                                                        blueprint_pos: egui::pos2(640.0, 360.0),
+                                                        blueprint_vel: egui::Vec2::ZERO,
+                                                        is_python: false,
+                                                        is_dir: true,
+                                                        depth,
+                                                        parent_id,
+                                                    });
+                                                    *id_gen += 1;
+                                                    scan_recursive(&path, root, nodes, id_gen, depth + 1, Some(dir_id));
+                                                }
                                             }
                                         } else if path.extension().and_then(|s| s.to_str())
                                             == Some("py")
                                         {
                                             let source = std::fs::read_to_string(&path)
                                                 .unwrap_or_else(|_| "(could not read file)".to_owned());
+                                            let rel = path.strip_prefix(root)
+                                                .unwrap_or(&path)
+                                                .to_string_lossy()
+                                                .replace(std::path::MAIN_SEPARATOR, " > ");
                                             nodes.push(IdeaNode {
                                                 id: *id_gen,
                                                 title: file_name.to_owned(),
                                                 content: source,
+                                                file_path: rel,
                                                 pos: egui::pos2(640.0, 360.0),
                                                 vel: egui::Vec2::ZERO,
                                                 blueprint_pos: egui::pos2(640.0, 360.0),
                                                 blueprint_vel: egui::Vec2::ZERO,
                                                 is_python: true,
+                                                is_dir: false,
                                                 depth,
+                                                parent_id,
                                             });
                                             *id_gen += 1;
                                         }
                                     }
                                 }
                             }
-                            scan_recursive(&path, &mut temp_nodes, &mut id_counter, 0);
+                            scan_recursive(&path, &path, &mut temp_nodes, &mut id_counter, 0, None);
                             if !temp_nodes.is_empty() {
+                                // Find or pick the root sun (main.py or first file)
                                 let sun_idx = temp_nodes
                                     .iter()
                                     .position(|n| n.title == "main.py")
                                     .unwrap_or(0);
                                 let mut sun_node = temp_nodes.remove(sun_idx);
+                                let sun_id = sun_node.id;
                                 sun_node.title = "main.py".to_owned();
                                 sun_node.pos = egui::pos2(640.0, 360.0);
                                 sun_node.blueprint_pos = egui::pos2(640.0, 360.0);
-                                self.nodes.push(sun_node);
+                                sun_node.parent_id = None;
 
-                                // Spread planets in a circle around the sun
-                                let planet_count = temp_nodes.len();
-                                for (i, mut planet) in temp_nodes.into_iter().enumerate() {
-                                    let angle = (i as f32 / planet_count as f32) * std::f32::consts::TAU;
-                                    let radius = 250.0 + (planet.depth as f32 * 200.0);
-                                    let spread_pos = egui::pos2(
-                                        640.0 + angle.cos() * radius,
-                                        360.0 + angle.sin() * radius,
-                                    );
-                                    planet.pos = spread_pos;
-                                    planet.blueprint_pos = spread_pos;
-                                    self.nodes.push(planet);
+                                // Remap: nodes with parent_id == None orbit the sun
+                                for node in &mut temp_nodes {
+                                    if node.parent_id.is_none() {
+                                        node.parent_id = Some(sun_id);
+                                    }
                                 }
 
-                                for (idx, node) in self.nodes.iter_mut().enumerate() {
-                                    node.id = idx;
+                                // Build final list: sun first, then all others
+                                self.nodes.push(sun_node);
+                                self.nodes.extend(temp_nodes);
+
+                                // Reassign IDs sequentially
+                                // Build old_id -> new_id map
+                                let id_map: std::collections::HashMap<usize, usize> = self.nodes
+                                    .iter()
+                                    .enumerate()
+                                    .map(|(new_id, node)| (node.id, new_id))
+                                    .collect();
+                                for node in &mut self.nodes {
+                                    let new_id = *id_map.get(&node.id).unwrap_or(&node.id);
+                                    node.id = new_id;
+                                    node.parent_id = node.parent_id.and_then(|pid| id_map.get(&pid).copied());
+                                }
+
+                                // Spread each node in a circle around its parent
+                                // Process by depth so parents are positioned first
+                                let max_depth = self.nodes.iter().map(|n| n.depth).max().unwrap_or(0);
+                                for d in 0..=max_depth {
+                                    // Collect children at this depth grouped by parent
+                                    let children_at_depth: Vec<(usize, Option<usize>)> = self.nodes
+                                        .iter()
+                                        .filter(|n| n.depth == d && n.parent_id.is_some())
+                                        .map(|n| (n.id, n.parent_id))
+                                        .collect();
+
+                                    // Group by parent
+                                    let mut by_parent: std::collections::HashMap<usize, Vec<usize>> =
+                                        std::collections::HashMap::new();
+                                    for (child_id, parent_id) in &children_at_depth {
+                                        if let Some(pid) = parent_id {
+                                            by_parent.entry(*pid).or_default().push(*child_id);
+                                        }
+                                    }
+
+                                    for (pid, children) in &by_parent {
+                                        let parent_pos = self.nodes.iter()
+                                            .find(|n| n.id == *pid)
+                                            .map(|n| n.pos)
+                                            .unwrap_or(egui::pos2(640.0, 360.0));
+                                        let count = children.len();
+                                        let radius = if self.nodes.iter().find(|n| n.id == *pid).map(|n| n.is_dir).unwrap_or(false) {
+                                            150.0 // sub-suns have tighter orbits
+                                        } else {
+                                            250.0
+                                        };
+                                        for (i, child_id) in children.iter().enumerate() {
+                                            let angle = (i as f32 / count as f32) * std::f32::consts::TAU;
+                                            let spread_pos = egui::pos2(
+                                                parent_pos.x + angle.cos() * radius,
+                                                parent_pos.y + angle.sin() * radius,
+                                            );
+                                            if let Some(child) = self.nodes.iter_mut().find(|n| n.id == *child_id) {
+                                                child.pos = spread_pos;
+                                                child.blueprint_pos = spread_pos;
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -488,41 +687,95 @@ impl eframe::App for GravityApp {
 
                 ui.separator();
 
-                // --- TETHER LINES ---
-                let sun_pos = self
-                    .nodes
-                    .iter()
-                    .find(|n| n.title == "main.py")
-                    .map(|n| to_screen(n.pos));
-                if let Some(s_pos) = sun_pos {
+                // --- INTERACTIVE TETHER LINES (parent -> child) ---
+                {
                     let painter = ui.painter();
+                    let screen_center = egui::pos2(panel_rect.center().x, panel_rect.center().y);
+                    let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+                    let grav_positions: Vec<(usize, egui::Pos2)> = self.nodes.iter().map(|n| (n.id, n.pos)).collect();
                     for node in &self.nodes {
-                        if node.title != "main.py" {
-                            let planet_screen = to_screen(node.pos);
-                            let mid = s_pos + (planet_screen - s_pos) * 0.5;
-                            let screen_center = egui::pos2(640.0, 360.0);
-                            let cp = mid + (screen_center - mid) * 0.2;
-                            let (glow_color, core_color) = depth_colors(node.depth);
-                            painter.add(egui::epaint::QuadraticBezierShape {
-                                points: [s_pos, cp, planet_screen],
-                                closed: false,
-                                fill: egui::Color32::TRANSPARENT,
-                                stroke: egui::Stroke::new(4.0, glow_color).into(),
-                            });
-                            painter.add(egui::epaint::QuadraticBezierShape {
-                                points: [s_pos, cp, planet_screen],
-                                closed: false,
-                                fill: egui::Color32::TRANSPARENT,
-                                stroke: egui::Stroke::new(1.2, core_color).into(),
-                            });
+                        if let Some(pid) = node.parent_id {
+                            if let Some((_, parent_pos)) = grav_positions.iter().find(|(id, _)| *id == pid) {
+                                let parent_screen = to_screen(*parent_pos);
+                                let child_screen = to_screen(node.pos);
+                                let mid = parent_screen + (child_screen - parent_screen) * 0.5;
+                                let cp = mid + (screen_center - mid) * 0.2;
+
+                                let dist = mouse_pos
+                                    .map(|mp| dist_to_bezier(mp, parent_screen, cp, child_screen))
+                                    .unwrap_or(f32::MAX);
+                                let hover_range = 60.0;
+                                let is_near = dist < hover_range;
+
+                                let (glow_color, core_color) = depth_colors(node.depth);
+                                let (glow_w, core_w) = if dist < 8.0 {
+                                    (8.0, 2.5)
+                                } else {
+                                    (4.0, 1.2)
+                                };
+
+                                painter.add(egui::epaint::QuadraticBezierShape {
+                                    points: [parent_screen, cp, child_screen],
+                                    closed: false,
+                                    fill: egui::Color32::TRANSPARENT,
+                                    stroke: egui::Stroke::new(glow_w, glow_color).into(),
+                                });
+                                painter.add(egui::epaint::QuadraticBezierShape {
+                                    points: [parent_screen, cp, child_screen],
+                                    closed: false,
+                                    fill: egui::Color32::TRANSPARENT,
+                                    stroke: egui::Stroke::new(core_w, core_color).into(),
+                                });
+
+                                if is_near {
+                                    let fade = ((1.0 - dist / hover_range) * 255.0) as u8;
+                                    let label_pos = bezier_point(parent_screen, cp, child_screen, 0.5);
+                                    let label = if node.file_path.is_empty() {
+                                        node.title.clone()
+                                    } else {
+                                        node.file_path.clone()
+                                    };
+                                    let text_galley = painter.layout_no_wrap(
+                                        label.clone(),
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::TRANSPARENT,
+                                    );
+                                    let pill_w = text_galley.size().x + 16.0;
+                                    let pill_h = text_galley.size().y + 10.0;
+                                    painter.rect_filled(
+                                        egui::Rect::from_center_size(label_pos, egui::vec2(pill_w, pill_h)),
+                                        pill_h / 2.0,
+                                        egui::Color32::from_rgba_unmultiplied(15, 15, 25, (fade as f32 * 0.85) as u8),
+                                    );
+                                    painter.rect_stroke(
+                                        egui::Rect::from_center_size(label_pos, egui::vec2(pill_w, pill_h)),
+                                        pill_h / 2.0,
+                                        egui::Stroke::new(1.0, egui::Color32::from_rgba_unmultiplied(120, 180, 255, fade / 2)),
+                                        egui::StrokeKind::Outside,
+                                    );
+                                    painter.text(
+                                        label_pos,
+                                        egui::Align2::CENTER_CENTER,
+                                        &label,
+                                        egui::FontId::proportional(11.0),
+                                        egui::Color32::from_rgba_unmultiplied(200, 230, 255, fade),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
 
                 // --- RENDER WINDOWS ---
                 for node in &mut self.nodes {
-                    let is_sun = node.title == "main.py";
-                    let title = if is_sun { "🌞 Sun" } else { "🪐 Planet" };
+                    let is_root_sun = node.parent_id.is_none();
+                    let title = if is_root_sun {
+                        "🌞 Sun"
+                    } else if node.is_dir {
+                        "⭐ Sub-Sun"
+                    } else {
+                        "🪐 Planet"
+                    };
                     let screen_pos = to_screen(node.pos);
                     let win_id = egui::Id::new(node.id + 1000);
 
