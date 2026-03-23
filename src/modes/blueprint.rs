@@ -3,6 +3,7 @@ use crate::app::GravityApp;
 use crate::nodes::{BlueprintNode, NodeCategory};
 use crate::canvas;
 use crate::utils::dist_to_bezier;
+use crate::blueprint_io;
 
 pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &mut egui::Ui, panel_rect: egui::Rect) {
     canvas::handle_pan_zoom(ctx, ui, panel_rect, &mut app.bp_cam_offset, &mut app.bp_zoom, "bp_canvas_pan");
@@ -15,6 +16,18 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
 
     // --- TOOLBAR ---
     ui.horizontal(|ui| {
+        ui.label("Project:");
+        ui.add(egui::TextEdit::singleline(&mut app.bp_project_name).desired_width(120.0));
+
+        ui.add_space(8.0);
+        if ui.button("💾 Save").clicked() {
+            blueprint_io::save_blueprint(app);
+        }
+        if ui.button("📂 Load").clicked() {
+            blueprint_io::load_blueprint(app);
+        }
+
+        ui.add_space(8.0);
         if ui.button("💡 Add Idea").clicked() {
             let id = app.bp_next_id;
             app.bp_next_id += 1;
@@ -33,6 +46,7 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
             app.bp_next_id = 0;
             app.bp_link_from = None;
             app.bp_link_mode = false;
+            app.bp_project_name = "Untitled".to_owned();
         }
 
         ui.add_space(8.0);

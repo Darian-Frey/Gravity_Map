@@ -3,6 +3,7 @@ mod nodes;
 mod utils;
 mod canvas;
 mod modes;
+mod blueprint_io;
 
 use eframe::egui;
 use app::GravityApp;

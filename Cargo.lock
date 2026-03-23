@@ -9,6 +9,8 @@ dependencies = [
  "eframe",
  "egui",
  "rfd",
+ "serde",
+ "serde_json",
  "tree-sitter",
  "tree-sitter-c-sharp",
  "tree-sitter-python",

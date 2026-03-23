@@ -26,6 +26,7 @@ pub(crate) struct GravityApp {
     pub bp_link_mode: bool,
     pub bp_delete_tether: Option<usize>,
     pub bp_delete_node: Option<usize>,
+    pub bp_project_name: String,
 }
 
 impl Default for GravityApp {
@@ -45,6 +46,7 @@ impl Default for GravityApp {
             bp_link_mode: false,
             bp_delete_tether: None,
             bp_delete_node: None,
+            bp_project_name: "Untitled".to_owned(),
         }
     }
 }

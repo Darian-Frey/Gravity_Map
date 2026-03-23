@@ -1,4 +1,5 @@
 use eframe::egui;
+use serde::{Serialize, Deserialize};
 
 pub(crate) struct IdeaNode {
     pub id: usize,
@@ -11,7 +12,7 @@ pub(crate) struct IdeaNode {
     pub parent_id: Option<usize>,
 }
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub(crate) enum NodeCategory {
     Idea,
     Task,
