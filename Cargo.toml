@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 eframe = "0.33.3"
 egui = "0.33.3"
+rfd = "0.17.2"
 tree-sitter = "0.26.7"
 tree-sitter-c-sharp = "0.23.1"
 tree-sitter-python = "0.25.0"

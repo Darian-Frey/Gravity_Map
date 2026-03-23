@@ -201,21 +201,55 @@ impl eframe::App for GravityApp {
             else {
                 ui.horizontal(|ui| {
                     ui.label("🌞 Software Gravity Mode");
-                    if ui.button("🚀 Simulate Python Project").clicked() {
-                        self.nodes.clear();
-                        self.nodes.push(IdeaNode {
-                            id: 0, title: "main.py".to_owned(),
-                            content: "if __name__ == '__main__':\n    init()".to_owned(),
-                            pos: egui::pos2(640.0, 360.0), vel: egui::Vec2::ZERO, is_python: true,
-                        });
-                        for i in 1..=5 {
-                            self.nodes.push(IdeaNode {
-                                id: i, title: format!("logic_{}.py", i),
-                                content: "def process(): pass".to_owned(),
-                                pos: egui::pos2(650.0, 370.0), vel: egui::Vec2::ZERO, is_python: true,
+                    
+                    if ui.button("📁 Scan Project Folder").clicked() {
+                        if let Some(path) = rfd::FileDialog::new().pick_folder() {
+                            self.nodes.clear();
+
+                            // Collect all .py files from the selected folder
+                            let mut py_files: Vec<(String, u64)> = Vec::new();
+                            if let Ok(entries) = std::fs::read_dir(&path) {
+                                for entry in entries.flatten() {
+                                    let file_path = entry.path();
+                                    if file_path.extension().and_then(|s| s.to_str()) == Some("py") {
+                                        let file_name = file_path.file_name()
+                                            .and_then(|n| n.to_str())
+                                            .unwrap_or("unknown.py")
+                                            .to_owned();
+                                        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                                        py_files.push((file_name, size));
+                                    }
+                                }
+                            }
+
+                            // 1. Add the Sun (main.py first, or the first file found)
+                            // Sort so main.py comes first if it exists
+                            py_files.sort_by(|a, b| {
+                                let a_is_main = a.0 == "main.py";
+                                let b_is_main = b.0 == "main.py";
+                                b_is_main.cmp(&a_is_main)
                             });
+
+                            for (i, (name, size)) in py_files.iter().enumerate() {
+                                let is_sun = i == 0;
+                                self.nodes.push(IdeaNode {
+                                    id: i,
+                                    // First node becomes "main.py" (the Sun) for tether logic
+                                    title: if is_sun { "main.py".to_owned() } else { name.clone() },
+                                    content: format!("Size: {} bytes", size),
+                                    // Sun at centre, planets slightly offset so physics can spread them
+                                    pos: if is_sun { egui::pos2(640.0, 360.0) } else { egui::pos2(650.0, 370.0) },
+                                    vel: egui::Vec2::ZERO,
+                                    is_python: true,
+                                });
+                            }
                         }
                     }
+
+                    if ui.button("🚀 Simulate (Mock)").clicked() {
+                        // Keep your previous simulation code here for testing...
+                    }
+
                     if ui.button("🗑 Clear").clicked() { self.nodes.clear(); }
                 });
 
