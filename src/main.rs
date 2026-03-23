@@ -42,6 +42,10 @@ struct GravityApp {
     bp_link_from: Option<usize>,
     /// Whether "Link mode" is active (click nodes to connect them)
     bp_link_mode: bool,
+    /// Tether index pending delete confirmation
+    bp_delete_tether: Option<usize>,
+    /// Node id pending delete confirmation
+    bp_delete_node: Option<usize>,
 }
 
 impl Default for GravityApp {
@@ -59,6 +63,8 @@ impl Default for GravityApp {
             bp_tethers: Vec::new(),
             bp_link_from: None,
             bp_link_mode: false,
+            bp_delete_tether: None,
+            bp_delete_node: None,
         }
     }
 }
@@ -632,8 +638,10 @@ impl eframe::App for GravityApp {
                     let painter = ui.painter();
                     let screen_center = egui::pos2(bp_panel_rect.center().x, bp_panel_rect.center().y);
                     let positions: Vec<(usize, egui::Pos2)> = self.bp_nodes.iter().map(|n| (n.id, n.pos)).collect();
+                    let mouse_pos = ctx.input(|i| i.pointer.hover_pos());
+                    let right_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
 
-                    for &(from_id, to_id) in &self.bp_tethers {
+                    for (idx, &(from_id, to_id)) in self.bp_tethers.iter().enumerate() {
                         let from_pos = positions.iter().find(|(id, _)| *id == from_id).map(|(_, p)| *p);
                         let to_pos = positions.iter().find(|(id, _)| *id == to_id).map(|(_, p)| *p);
                         if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
@@ -641,18 +649,37 @@ impl eframe::App for GravityApp {
                             let cs = bp_to_screen(tp);
                             let mid = ps + (cs - ps) * 0.5;
                             let cp = mid + (screen_center - mid) * 0.2;
-                            let glow = egui::Color32::from_rgba_unmultiplied(150, 100, 255, 25);
-                            let core = egui::Color32::from_rgba_unmultiplied(200, 170, 255, 180);
+
+                            let near = mouse_pos
+                                .map(|mp| dist_to_bezier(mp, ps, cp, cs) < 8.0)
+                                .unwrap_or(false);
+
+                            let glow = if near {
+                                egui::Color32::from_rgba_unmultiplied(255, 80, 80, 40)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(150, 100, 255, 25)
+                            };
+                            let core = if near {
+                                egui::Color32::from_rgba_unmultiplied(255, 120, 120, 200)
+                            } else {
+                                egui::Color32::from_rgba_unmultiplied(200, 170, 255, 180)
+                            };
+                            let (gw, cw) = if near { (8.0, 2.5) } else { (4.0, 1.2) };
+
                             painter.add(egui::epaint::QuadraticBezierShape {
                                 points: [ps, cp, cs], closed: false,
                                 fill: egui::Color32::TRANSPARENT,
-                                stroke: egui::Stroke::new(4.0, glow).into(),
+                                stroke: egui::Stroke::new(gw, glow).into(),
                             });
                             painter.add(egui::epaint::QuadraticBezierShape {
                                 points: [ps, cp, cs], closed: false,
                                 fill: egui::Color32::TRANSPARENT,
-                                stroke: egui::Stroke::new(1.2, core).into(),
+                                stroke: egui::Stroke::new(cw, core).into(),
                             });
+
+                            if near && right_clicked {
+                                self.bp_delete_tether = Some(idx);
+                            }
                         }
                     }
 
@@ -671,9 +698,37 @@ impl eframe::App for GravityApp {
                         }
                     }
                 }
+                // --- DELETE TETHER CONFIRMATION ---
+                if let Some(idx) = self.bp_delete_tether {
+                    let mut open = true;
+                    egui::Window::new("Delete Tether?")
+                        .collapsible(false)
+                        .resizable(false)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .open(&mut open)
+                        .show(ctx, |ui| {
+                            ui.label("Are you sure you want to delete this tether?");
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Yes, delete").clicked() {
+                                    if idx < self.bp_tethers.len() {
+                                        self.bp_tethers.remove(idx);
+                                    }
+                                    self.bp_delete_tether = None;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.bp_delete_tether = None;
+                                }
+                            });
+                        });
+                    if !open {
+                        self.bp_delete_tether = None;
+                    }
+                }
 
                 // --- BLUEPRINT RENDER WINDOWS ---
                 let mut clicked_node_id: Option<usize> = None;
+                let mut clicked_delete_node: Option<usize> = None;
                 for node in &mut self.bp_nodes {
                     let screen_pos = bp_to_screen(node.pos);
                     let win_id = egui::Id::new(node.id + 9000);
@@ -697,6 +752,20 @@ impl eframe::App for GravityApp {
                             }
                         });
 
+                    // Right-click detection on the entire window (including title bar)
+                    if let Some(inner) = &response {
+                        let win_rect = inner.response.rect;
+                        let right_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
+                        let hover_pos = ctx.input(|i| i.pointer.hover_pos());
+                        if right_clicked {
+                            if let Some(mp) = hover_pos {
+                                if win_rect.contains(mp) {
+                                    clicked_delete_node = Some(node_id);
+                                }
+                            }
+                        }
+                    }
+
                     if !is_link_mode {
                         if let Some(inner) = response {
                             let actual_pos = inner.response.rect.min;
@@ -706,6 +775,10 @@ impl eframe::App for GravityApp {
                             }
                         }
                     }
+                }
+
+                if let Some(nid) = clicked_delete_node {
+                    self.bp_delete_node = Some(nid);
                 }
 
                 // Handle link mode clicks
@@ -723,6 +796,37 @@ impl eframe::App for GravityApp {
                         self.bp_link_from = None;
                     } else {
                         self.bp_link_from = Some(target_id);
+                    }
+                }
+
+                // --- DELETE NODE CONFIRMATION ---
+                if let Some(nid) = self.bp_delete_node {
+                    let node_title = self.bp_nodes.iter()
+                        .find(|n| n.id == nid)
+                        .map(|n| n.title.clone())
+                        .unwrap_or_default();
+                    let mut open = true;
+                    egui::Window::new("Delete Node?")
+                        .collapsible(false)
+                        .resizable(false)
+                        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                        .open(&mut open)
+                        .show(ctx, |ui| {
+                            ui.label(format!("Delete \"{}\" and all its connections?", node_title));
+                            ui.add_space(8.0);
+                            ui.horizontal(|ui| {
+                                if ui.button("Yes, delete").clicked() {
+                                    self.bp_tethers.retain(|&(a, b)| a != nid && b != nid);
+                                    self.bp_nodes.retain(|n| n.id != nid);
+                                    self.bp_delete_node = None;
+                                }
+                                if ui.button("Cancel").clicked() {
+                                    self.bp_delete_node = None;
+                                }
+                            });
+                        });
+                    if !open {
+                        self.bp_delete_node = None;
                     }
                 }
             }
