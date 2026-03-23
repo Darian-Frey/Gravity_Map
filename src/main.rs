@@ -199,19 +199,15 @@ impl eframe::App for GravityApp {
             }
             // --- GRAVITY MODE UI ---
             else {
-                // Toolbar: simulate a Python project or clear
                 ui.horizontal(|ui| {
                     ui.label("🌞 Software Gravity Mode");
-                    // Generates a Sun (main.py) and 5 planet nodes, all starting near the centre
                     if ui.button("🚀 Simulate Python Project").clicked() {
                         self.nodes.clear();
-                        // Create the Sun — the central attractor that all planets orbit
                         self.nodes.push(IdeaNode {
                             id: 0, title: "main.py".to_owned(),
                             content: "if __name__ == '__main__':\n    init()".to_owned(),
                             pos: egui::pos2(640.0, 360.0), vel: egui::Vec2::ZERO, is_python: true,
                         });
-                        // Create 5 Planets — they start stacked and physics spreads them out
                         for i in 1..=5 {
                             self.nodes.push(IdeaNode {
                                 id: i, title: format!("logic_{}.py", i),
@@ -220,19 +216,50 @@ impl eframe::App for GravityApp {
                             });
                         }
                     }
-                    // Removes all nodes from the scene
                     if ui.button("🗑 Clear").clicked() { self.nodes.clear(); }
                 });
 
                 ui.separator();
 
-                // Render each node as a window that follows its physics position
+                // --- DRAW CURVED TETHER LINES (WORMHOLES) ---
+                let sun_pos = self.nodes.iter().find(|n| n.title == "main.py").map(|n| n.pos);
+                
+                if let Some(s_pos) = sun_pos {
+                    let painter = ui.painter();
+                    for node in &self.nodes {
+                        if node.title != "main.py" {
+                            let planet_pos = node.pos;
+                            
+                            // Calculate a control point for the curve bowing towards screen center
+                            let mid_point = s_pos + (planet_pos - s_pos) * 0.5;
+                            let screen_center = egui::pos2(640.0, 360.0);
+                            let control_point = mid_point + (screen_center - mid_point) * 0.2;
+
+                            // 1. Draw the "Glow" layer (wide and faint)
+                            painter.add(egui::epaint::QuadraticBezierShape {
+                                points: [s_pos, control_point, planet_pos],
+                                closed: false,
+                                fill: egui::Color32::TRANSPARENT,
+                                // .into() converts Stroke to PathStroke
+                                stroke: egui::Stroke::new(4.0, egui::Color32::from_rgba_unmultiplied(80, 150, 255, 25)).into(),
+                            });
+
+                            // 2. Draw the "Core" layer (thin and bright)
+                            painter.add(egui::epaint::QuadraticBezierShape {
+                                points: [s_pos, control_point, planet_pos],
+                                closed: false,
+                                fill: egui::Color32::TRANSPARENT,
+                                stroke: egui::Stroke::new(1.2, egui::Color32::from_rgba_unmultiplied(150, 220, 255, 180)).into(),
+                            });
+                        }
+                    }
+                }
+
+                // --- RENDER WINDOWS ---
                 for node in &mut self.nodes {
-                    // True if this node is the Sun (central attractor)
                     let is_sun = node.title == "main.py";
                     let title = if is_sun { "🌞 Sun" } else { "🪐 Planet" };
 
-                    // Each window gets a unique ID offset by 1000 to avoid collisions with Blueprint windows
                     let window = egui::Window::new(format!("{} : {}", title, node.title))
                         .current_pos(node.pos)
                         .id(egui::Id::new(node.id + 1000));
@@ -242,19 +269,19 @@ impl eframe::App for GravityApp {
                         if is_sun { ui.label("(Draggable System Center)"); }
                     });
 
-                    // Handle drag: let the user reposition any node (especially the Sun)
-                    // and kill its velocity so it doesn't fly off after release
                     if let Some(inner) = response {
                         if inner.response.dragged() {
                             node.pos += inner.response.drag_delta();
-                            node.vel = egui::Vec2::ZERO;
+                            node.vel = egui::Vec2::ZERO; 
                         }
                     }
                 }
-            }
-            // Request continuous repainting so physics runs every frame
+            } // End of Gravity Mode else block
+
+            // Request continuous repainting so physics runs every frame.
+            // This MUST stay inside the CentralPanel closure.
             ctx.request_repaint();
-        });
+        }); // End of CentralPanel closure
     }
 }
 
