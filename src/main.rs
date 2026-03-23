@@ -128,8 +128,12 @@ impl eframe::App for GravityApp {
 
             ui.separator();
 
-            // --- CANVAS PANNING & ZOOM ---
             let panel_rect = ui.available_rect_before_wrap();
+
+            // --- MODE CONTENT ---
+            match self.mode {
+            Mode::Gravity => {
+            // --- CANVAS PANNING & ZOOM ---
             let panel_response = ui.interact(panel_rect, ui.id().with("canvas_pan"), egui::Sense::drag());
             if panel_response.dragged() {
                 self.cam_offset += panel_response.drag_delta();
@@ -202,10 +206,6 @@ impl eframe::App for GravityApp {
                     }
                 }
             }
-
-            // --- MODE CONTENT ---
-            match self.mode {
-            Mode::Gravity => {
             // --- TOOLBAR ---
             ui.horizontal(|ui| {
                 if ui.button("📁 Scan Project").clicked() {
