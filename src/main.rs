@@ -617,50 +617,73 @@ impl eframe::App for GravityApp {
                                     node.parent_id = node.parent_id.and_then(|pid| id_map.get(&pid).copied());
                                 }
 
-                                // Spread each node in a circle around its parent
-                                // Process by depth so parents are positioned first
-                                let max_depth = self.nodes.iter().map(|n| n.depth).max().unwrap_or(0);
-                                for d in 0..=max_depth {
-                                    // Collect children at this depth grouped by parent
-                                    let children_at_depth: Vec<(usize, Option<usize>)> = self.nodes
+                                // --- RADIAL LAYOUT ---
+                                // Children spread in a circle around their parent.
+                                // Sub-suns get a larger radius so their subtrees have room.
+                                fn count_descendants(parent_id: usize, nodes: &[IdeaNode]) -> usize {
+                                    let children: Vec<usize> = nodes
                                         .iter()
-                                        .filter(|n| n.depth == d && n.parent_id.is_some())
-                                        .map(|n| (n.id, n.parent_id))
+                                        .filter(|n| n.parent_id == Some(parent_id))
+                                        .map(|n| n.id)
                                         .collect();
-
-                                    // Group by parent
-                                    let mut by_parent: std::collections::HashMap<usize, Vec<usize>> =
-                                        std::collections::HashMap::new();
-                                    for (child_id, parent_id) in &children_at_depth {
-                                        if let Some(pid) = parent_id {
-                                            by_parent.entry(*pid).or_default().push(*child_id);
-                                        }
+                                    let mut total = children.len();
+                                    for cid in &children {
+                                        total += count_descendants(*cid, nodes);
                                     }
+                                    total
+                                }
 
-                                    for (pid, children) in &by_parent {
-                                        let parent_pos = self.nodes.iter()
-                                            .find(|n| n.id == *pid)
-                                            .map(|n| n.pos)
-                                            .unwrap_or(egui::pos2(640.0, 360.0));
-                                        let count = children.len();
-                                        let radius = if self.nodes.iter().find(|n| n.id == *pid).map(|n| n.is_dir).unwrap_or(false) {
-                                            150.0 // sub-suns have tighter orbits
-                                        } else {
-                                            250.0
-                                        };
-                                        for (i, child_id) in children.iter().enumerate() {
-                                            let angle = (i as f32 / count as f32) * std::f32::consts::TAU;
-                                            let spread_pos = egui::pos2(
-                                                parent_pos.x + angle.cos() * radius,
-                                                parent_pos.y + angle.sin() * radius,
-                                            );
-                                            if let Some(child) = self.nodes.iter_mut().find(|n| n.id == *child_id) {
-                                                child.pos = spread_pos;
-                                                child.blueprint_pos = spread_pos;
-                                            }
+                                fn radial_layout(
+                                    parent_id: usize,
+                                    nodes: &mut Vec<IdeaNode>,
+                                    center: egui::Pos2,
+                                    radius: f32,
+                                    start_angle: f32,
+                                    sweep: f32,
+                                ) {
+                                    let child_ids: Vec<usize> = nodes
+                                        .iter()
+                                        .filter(|n| n.parent_id == Some(parent_id))
+                                        .map(|n| n.id)
+                                        .collect();
+                                    if child_ids.is_empty() { return; }
+
+                                    // Weight each child by how many descendants it has (+ 1 for itself)
+                                    let weights: Vec<f32> = child_ids.iter()
+                                        .map(|cid| 1.0 + count_descendants(*cid, nodes) as f32)
+                                        .collect();
+                                    let total_weight: f32 = weights.iter().sum();
+
+                                    let mut angle_cursor = start_angle;
+                                    for (i, child_id) in child_ids.iter().enumerate() {
+                                        let child_sweep = sweep * (weights[i] / total_weight);
+                                        let angle = angle_cursor + child_sweep / 2.0;
+                                        let is_dir = nodes.iter().find(|n| n.id == *child_id).map(|n| n.is_dir).unwrap_or(false);
+
+                                        let pos = egui::pos2(
+                                            center.x + angle.cos() * radius,
+                                            center.y + angle.sin() * radius,
+                                        );
+
+                                        if let Some(child) = nodes.iter_mut().find(|n| n.id == *child_id) {
+                                            child.pos = pos;
+                                            child.blueprint_pos = pos;
                                         }
+
+                                        // Recurse into sub-suns with a smaller radius and their slice of the arc
+                                        if is_dir {
+                                            let sub_radius = radius * 0.7;
+                                            radial_layout(*child_id, nodes, pos, sub_radius.max(150.0), angle - child_sweep / 2.0, child_sweep);
+                                        }
+
+                                        angle_cursor += child_sweep;
                                     }
                                 }
+
+                                let sun_id = self.nodes[0].id;
+                                let child_count = self.nodes.iter().filter(|n| n.parent_id == Some(sun_id)).count();
+                                let base_radius = 400.0 + (child_count as f32 * 40.0).min(400.0);
+                                radial_layout(sun_id, &mut self.nodes, egui::pos2(640.0, 360.0), base_radius, 0.0, std::f32::consts::TAU);
                             }
                         }
                     }
