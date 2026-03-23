@@ -1,19 +1,13 @@
-# Godot 4+ specific
-.godot/
-.import/
-export.cfg
-export_credentials.cfg
+# Rust / Cargo
+/target/
+**/*.rs.bk
+Cargo.lock
 
-# .NET / C#
-bin/
-obj/
-*.sln
-*.csproj
-*.user
-*.suo
-.vs/
+# IDEs
 .vscode/
+.idea/
+.vs/
 
-# OS Specific
+# OS junk
 .DS_Store
 Thumbs.db
