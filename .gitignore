@@ -1,0 +1,19 @@
+# Godot 4+ specific
+.godot/
+.import/
+export.cfg
+export_credentials.cfg
+
+# .NET / C#
+bin/
+obj/
+*.sln
+*.csproj
+*.user
+*.suo
+.vs/
+.vscode/
+
+# OS Specific
+.DS_Store
+Thumbs.db
