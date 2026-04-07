@@ -34,9 +34,9 @@ pub(crate) fn save_blueprint(app: &GravityApp) {
     let save = BlueprintSave {
         project_name: app.bp_project_name.clone(),
         saved_at: chrono_now(),
-        cam_offset_x: app.bp_cam_offset.x,
-        cam_offset_y: app.bp_cam_offset.y,
-        zoom: app.bp_zoom,
+        cam_offset_x: app.blueprint_canvas.offset.x,
+        cam_offset_y: app.blueprint_canvas.offset.y,
+        zoom: app.blueprint_canvas.zoom,
         next_id: app.bp_next_id,
         nodes: app.bp_nodes.iter().map(|n| SavedNode {
             id: n.id,
@@ -78,8 +78,8 @@ pub(crate) fn load_blueprint(app: &mut GravityApp) {
         };
 
         app.bp_project_name = save.project_name;
-        app.bp_cam_offset = eframe::egui::vec2(save.cam_offset_x, save.cam_offset_y);
-        app.bp_zoom = save.zoom;
+        app.blueprint_canvas.offset = eframe::egui::vec2(save.cam_offset_x, save.cam_offset_y);
+        app.blueprint_canvas.zoom = save.zoom;
         app.bp_next_id = save.next_id;
         app.bp_link_from = None;
         app.bp_link_mode = false;

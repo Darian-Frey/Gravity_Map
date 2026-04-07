@@ -2,6 +2,7 @@ mod app;
 mod nodes;
 mod utils;
 mod canvas;
+mod node_window;
 mod modes;
 mod blueprint_io;
 

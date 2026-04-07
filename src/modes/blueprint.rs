@@ -1,18 +1,15 @@
 use eframe::egui;
 use crate::app::GravityApp;
 use crate::nodes::{BlueprintNode, NodeCategory};
-use crate::canvas;
+use crate::node_window;
 use crate::utils::dist_to_bezier;
 use crate::blueprint_io;
 
 pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &mut egui::Ui, panel_rect: egui::Rect) {
-    canvas::handle_pan_zoom(ctx, ui, panel_rect, &mut app.bp_cam_offset, &mut app.bp_zoom, "bp_canvas_pan");
+    app.blueprint_canvas.handle_pan_zoom(ctx, ui, panel_rect, "bp_canvas_pan");
 
-    let bp_zoom = app.bp_zoom;
-    let bp_cam = app.bp_cam_offset;
-    canvas::draw_grid(ui.painter(), panel_rect, bp_cam, bp_zoom);
-
-    let bp_to_screen = |world_pos: egui::Pos2| canvas::world_to_screen(world_pos, bp_cam, bp_zoom);
+    let canvas = app.blueprint_canvas.clone();
+    canvas.draw_grid(ui.painter(), panel_rect);
 
     // --- TOOLBAR ---
     ui.horizontal(|ui| {
@@ -48,6 +45,10 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
             app.bp_link_mode = false;
             app.bp_project_name = "Untitled".to_owned();
         }
+        if ui.button("🔍 Zoom to Fit").clicked() {
+            let points: Vec<egui::Pos2> = app.bp_nodes.iter().map(|n| n.pos).collect();
+            app.blueprint_canvas.zoom_to_fit(panel_rect, &points, 120.0);
+        }
 
         ui.add_space(8.0);
         let link_label = if app.bp_link_mode { "🔗 Linking... (click to cancel)" } else { "🔗 Link Nodes" };
@@ -70,8 +71,8 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
             let from_pos = positions.iter().find(|(id, _)| *id == from_id).map(|(_, p)| *p);
             let to_pos = positions.iter().find(|(id, _)| *id == to_id).map(|(_, p)| *p);
             if let (Some(fp), Some(tp)) = (from_pos, to_pos) {
-                let ps = bp_to_screen(fp);
-                let cs = bp_to_screen(tp);
+                let ps = canvas.world_to_screen(fp);
+                let cs = canvas.world_to_screen(tp);
                 let mid = ps + (cs - ps) * 0.5;
                 let cp = mid + (screen_center - mid) * 0.2;
 
@@ -112,7 +113,7 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
         if app.bp_link_mode {
             if let Some(from_id) = app.bp_link_from {
                 if let Some((_, from_pos)) = positions.iter().find(|(id, _)| *id == from_id) {
-                    let ps = bp_to_screen(*from_pos);
+                    let ps = canvas.world_to_screen(*from_pos);
                     if let Some(mouse) = ctx.input(|i| i.pointer.hover_pos()) {
                         painter.line_segment(
                             [ps, mouse],
@@ -155,23 +156,27 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
     // --- RENDER WINDOWS ---
     let mut clicked_node_id: Option<usize> = None;
     let mut clicked_delete_node: Option<usize> = None;
+    let is_link_mode = app.bp_link_mode;
     for node in &mut app.bp_nodes {
-        let screen_pos = bp_to_screen(node.pos);
+        let screen_pos = canvas.world_to_screen(node.pos);
         let win_id = egui::Id::new(node.id + 9000);
 
         let node_id = node.id;
-        let is_link_mode = app.bp_link_mode;
         let cat_color = node.category.color();
         let cat_icon = node.category.icon();
         let frame = egui::Frame::window(&ctx.style())
             .stroke(egui::Stroke::new(2.0, cat_color));
-        let response = egui::Window::new(format!("{} {}", cat_icon, node.title))
-            .current_pos(screen_pos)
-            .movable(!is_link_mode)
-            .constrain(false)
-            .frame(frame)
-            .id(win_id)
-            .show(ctx, |ui| {
+        let title = format!("{} {}", cat_icon, node.title);
+
+        let resp = node_window::render_node_window(
+            ctx,
+            win_id,
+            title,
+            screen_pos,
+            canvas.zoom,
+            !is_link_mode,
+            Some(frame),
+            |ui| {
                 ui.text_edit_singleline(&mut node.title);
                 ui.horizontal(|ui| {
                     ui.label("Category:");
@@ -190,31 +195,13 @@ pub(crate) fn render_blueprint(app: &mut GravityApp, ctx: &egui::Context, ui: &m
                         clicked_node_id = Some(node_id);
                     }
                 }
-            });
+            },
+        );
 
-        // Right-click detection on the entire window
-        if let Some(inner) = &response {
-            let win_rect = inner.response.rect;
-            let right_clicked = ctx.input(|i| i.pointer.button_clicked(egui::PointerButton::Secondary));
-            let hover_pos = ctx.input(|i| i.pointer.hover_pos());
-            if right_clicked {
-                if let Some(mp) = hover_pos {
-                    if win_rect.contains(mp) {
-                        clicked_delete_node = Some(node_id);
-                    }
-                }
-            }
+        if resp.right_clicked_inside {
+            clicked_delete_node = Some(node_id);
         }
-
-        if !is_link_mode {
-            if let Some(inner) = response {
-                let actual_pos = inner.response.rect.min;
-                let delta = actual_pos - screen_pos;
-                if delta.length() > 0.5 {
-                    node.pos += delta / bp_zoom;
-                }
-            }
-        }
+        node.pos += resp.world_drag_delta;
     }
 
     if let Some(nid) = clicked_delete_node {

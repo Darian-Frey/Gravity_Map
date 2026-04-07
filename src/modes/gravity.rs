@@ -1,17 +1,17 @@
 use eframe::egui;
 use crate::app::GravityApp;
 use crate::nodes::IdeaNode;
-use crate::canvas;
+use crate::node_window;
 use crate::utils::{dist_to_bezier, bezier_point, depth_colors};
 
 pub(crate) fn render_gravity(app: &mut GravityApp, ctx: &egui::Context, ui: &mut egui::Ui, panel_rect: egui::Rect) {
-    canvas::handle_pan_zoom(ctx, ui, panel_rect, &mut app.cam_offset, &mut app.zoom, "canvas_pan");
+    app.gravity_canvas.handle_pan_zoom(ctx, ui, panel_rect, "canvas_pan");
 
-    let zoom = app.zoom;
-    let cam = app.cam_offset;
-    canvas::draw_grid(ui.painter(), panel_rect, cam, zoom);
-
-    let to_screen = |world_pos: egui::Pos2| canvas::world_to_screen(world_pos, cam, zoom);
+    // Snapshot the canvas for use later in the frame. The toolbar may mutate
+    // app.gravity_canvas (e.g. "Return to Sun"), but that change applies on the
+    // next frame — same one-frame delay the original code had.
+    let canvas = app.gravity_canvas.clone();
+    canvas.draw_grid(ui.painter(), panel_rect);
 
     // --- TOOLBAR ---
     ui.horizontal(|ui| {
@@ -63,8 +63,13 @@ pub(crate) fn render_gravity(app: &mut GravityApp, ctx: &egui::Context, ui: &mut
         if ui.button("🌞 Return to Sun").clicked() {
             if let Some(sun) = app.nodes.iter().find(|n| n.title == "main.py") {
                 let viewport_center = egui::vec2(panel_rect.center().x, panel_rect.center().y);
-                app.cam_offset = viewport_center - sun.pos.to_vec2() * app.zoom;
+                let z = app.gravity_canvas.zoom;
+                app.gravity_canvas.offset = viewport_center - sun.pos.to_vec2() * z;
             }
+        }
+        if ui.button("🔍 Zoom to Fit").clicked() {
+            let points: Vec<egui::Pos2> = app.nodes.iter().map(|n| n.pos).collect();
+            app.gravity_canvas.zoom_to_fit(panel_rect, &points, 120.0);
         }
 
         ui.add_space(8.0);
@@ -83,8 +88,8 @@ pub(crate) fn render_gravity(app: &mut GravityApp, ctx: &egui::Context, ui: &mut
         for node in &app.nodes {
             if let Some(pid) = node.parent_id {
                 if let Some((_, parent_pos)) = positions.iter().find(|(id, _)| *id == pid) {
-                    let parent_screen = to_screen(*parent_pos);
-                    let child_screen = to_screen(node.pos);
+                    let parent_screen = canvas.world_to_screen(*parent_pos);
+                    let child_screen = canvas.world_to_screen(node.pos);
                     let mid = parent_screen + (child_screen - parent_screen) * 0.5;
                     let cp = mid + (screen_center - mid) * 0.2;
 
@@ -140,6 +145,7 @@ pub(crate) fn render_gravity(app: &mut GravityApp, ctx: &egui::Context, ui: &mut
     }
 
     // --- RENDER WINDOWS ---
+    let collapse_action = app.collapse_action;
     for node in &mut app.nodes {
         let is_root_sun = node.parent_id.is_none();
         let title = if is_root_sun {
@@ -149,26 +155,30 @@ pub(crate) fn render_gravity(app: &mut GravityApp, ctx: &egui::Context, ui: &mut
         } else {
             format!("🪐 Planet : {}", node.title)
         };
-        let screen_pos = to_screen(node.pos);
+        let screen_pos = canvas.world_to_screen(node.pos);
         let win_id = egui::Id::new(node.id + 1000);
 
-        if app.collapse_action != 0 {
+        if collapse_action != 0 {
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ctx, win_id.with("collapsing"), true,
             );
-            state.set_open(app.collapse_action < 0);
+            state.set_open(collapse_action < 0);
             state.store(ctx);
         }
 
-        let response = egui::Window::new(&title)
-            .current_pos(screen_pos)
-            .movable(true)
-            .constrain(false)
-            .id(win_id)
-            .show(ctx, |ui| {
+        let node_id = node.id;
+        let resp = node_window::render_node_window(
+            ctx,
+            win_id,
+            title,
+            screen_pos,
+            canvas.zoom,
+            true,
+            None,
+            |ui| {
                 ui.label(&node.title);
                 egui::CollapsingHeader::new("Source Code")
-                    .id_salt(node.id + 5000)
+                    .id_salt(node_id + 5000)
                     .show(ui, |ui| {
                         egui::ScrollArea::vertical()
                             .max_height(300.0)
@@ -180,20 +190,15 @@ pub(crate) fn render_gravity(app: &mut GravityApp, ctx: &egui::Context, ui: &mut
                                 );
                             });
                     });
-            });
+            },
+        );
 
-        if let Some(inner) = response {
-            let actual_pos = inner.response.rect.min;
-            let delta = actual_pos - screen_pos;
-            if delta.length() > 0.5 {
-                node.pos += delta / zoom;
-            }
-        }
+        node.pos += resp.world_drag_delta;
     }
 
     // --- SUN OFF-SCREEN INDICATOR ---
     if let Some(sun) = app.nodes.iter().find(|n| n.title == "main.py") {
-        let sun_screen = to_screen(sun.pos);
+        let sun_screen = canvas.world_to_screen(sun.pos);
         let margin = 40.0;
         let is_offscreen = sun_screen.x < panel_rect.left()
             || sun_screen.x > panel_rect.right()

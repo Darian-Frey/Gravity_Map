@@ -1,4 +1,5 @@
 use eframe::egui;
+use crate::canvas::CanvasState;
 use crate::nodes::{IdeaNode, BlueprintNode};
 use crate::modes;
 
@@ -11,15 +12,18 @@ pub(crate) enum Mode {
 
 pub(crate) struct GravityApp {
     pub mode: Mode,
+
     // Mode 1: Gravity
     pub nodes: Vec<IdeaNode>,
-    pub cam_offset: egui::Vec2,
-    pub zoom: f32,
+    pub gravity_canvas: CanvasState,
     pub collapse_action: i8,
+
+    // Mode 2: Neural Network
+    pub neural_canvas: CanvasState,
+
     // Mode 3: Blueprint
     pub bp_nodes: Vec<BlueprintNode>,
-    pub bp_cam_offset: egui::Vec2,
-    pub bp_zoom: f32,
+    pub blueprint_canvas: CanvasState,
     pub bp_next_id: usize,
     pub bp_tethers: Vec<(usize, usize)>,
     pub bp_link_from: Option<usize>,
@@ -33,13 +37,15 @@ impl Default for GravityApp {
     fn default() -> Self {
         Self {
             mode: Mode::Gravity,
+
             nodes: Vec::new(),
-            cam_offset: egui::Vec2::ZERO,
-            zoom: 1.0,
+            gravity_canvas: CanvasState::default(),
             collapse_action: 0,
+
+            neural_canvas: CanvasState::default(),
+
             bp_nodes: Vec::new(),
-            bp_cam_offset: egui::Vec2::ZERO,
-            bp_zoom: 1.0,
+            blueprint_canvas: CanvasState::default(),
             bp_next_id: 0,
             bp_tethers: Vec::new(),
             bp_link_from: None,

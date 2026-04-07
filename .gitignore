@@ -11,3 +11,9 @@ Cargo.lock
 # OS junk
 .DS_Store
 Thumbs.db
+
+# Test fixtures (sample projects to scan with Mode 1, regenerated as needed)
+test_fixtures/
+
+# Stray log files (e.g. from `cargo run 2> debug.log` diagnostic sessions)
+*.log
